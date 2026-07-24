@@ -25,7 +25,11 @@ use crate::events::TtlExtended;
 use crate::invoice::{InvoiceCategory, InvoiceStatus};
 use crate::maintenance::{ExtendReport, MaintenanceControl, MAX_REASON_LEN};
 use crate::{QuickLendXContract, QuickLendXContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+use alloc::vec;
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    xdr, Address, BytesN, Env, String, TryFromVal, Vec,
+};
 
 // ============================================================================
 // Helpers
@@ -130,7 +134,8 @@ fn test_maintenance_blocks_place_bid() {
 
     client.set_maintenance_mode(&admin, &true, &reason(&env, "Upgrade"));
 
-    let result = client.try_place_bid(&investor, &invoice_id, &1_000i128, &1_100i128);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_place_bid(&investor, &invoice_id, &1_000i128, &1_100i128, &salt);
     assert_eq!(
         result.unwrap_err().unwrap(),
         QuickLendXError::MaintenanceModeActive
@@ -343,7 +348,7 @@ fn test_oversized_reason_rejected() {
     let oversized: String = {
         let bytes =
             soroban_sdk::Bytes::from_slice(&env, &vec![b'x'; (MAX_REASON_LEN + 1) as usize]);
-        String::try_from_bytes(&bytes).unwrap()
+        String::from_bytes(&env, &bytes.to_alloc_vec())
     };
 
     let result = client.try_set_maintenance_mode(&admin, &true, &oversized);
@@ -365,7 +370,7 @@ fn test_max_length_reason_accepted() {
 
     let max_reason: String = {
         let bytes = soroban_sdk::Bytes::from_slice(&env, &vec![b'a'; MAX_REASON_LEN as usize]);
-        String::try_from_bytes(&bytes).unwrap()
+        String::from_bytes(&env, &bytes.to_alloc_vec())
     };
 
     client.set_maintenance_mode(&admin, &true, &max_reason);
@@ -456,7 +461,8 @@ fn test_admin_can_extend_protocol_ttl() {
 
     client.add_currency(&admin, &currency);
     let invoice_id = make_invoice(&env, &client, &business, &currency);
-    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128, &salt);
 
     let report = client.extend_protocol_ttl(&admin);
 
@@ -511,7 +517,8 @@ fn test_extend_ttl_idempotent() {
 
     client.add_currency(&admin, &currency);
     let invoice_id = make_invoice(&env, &client, &business, &currency);
-    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128, &salt);
 
     let report1 = client.extend_protocol_ttl(&admin);
     let report2 = client.extend_protocol_ttl(&admin);
@@ -533,7 +540,8 @@ fn test_extend_ttl_all_kinds_populated() {
     client.add_currency(&admin, &currency);
 
     let invoice_id = make_invoice(&env, &client, &business, &currency);
-    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128, &salt);
 
     let _invoice2 = make_invoice(&env, &client, &business, &currency);
     let currency2 = Address::generate(&env);
@@ -556,7 +564,8 @@ fn test_extend_ttl_emits_events() {
 
     client.add_currency(&admin, &currency);
     let invoice_id = make_invoice(&env, &client, &business, &currency);
-    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let _bid_id = client.place_bid(&investor, &invoice_id, &500i128, &600i128, &salt);
 
     let before = count_ttl_extended_events(&env);
 
@@ -590,4 +599,110 @@ fn test_extend_ttl_no_events_when_empty() {
         0,
         "no TtlExtended events when all indexes are empty"
     );
+}
+
+// ============================================================================
+// 10. Upgrade-pending guard — all writable entrypoints blocked while active
+// ============================================================================
+
+/// Negative test: writable entrypoints return UpgradeScheduled when an upgrade
+/// is pending. Before the guard was added, this test would have failed because
+/// the write would succeed. After the guard, it passes.
+#[test]
+fn test_store_invoice_blocked_during_upgrade_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(QuickLendXContract, ());
+    let client = QuickLendXContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_admin(&admin);
+
+    let business = Address::generate(&env);
+    let currency = Address::generate(&env);
+    let due_date = env.ledger().timestamp() + 86_400;
+
+    client.schedule_upgrade(&admin);
+
+    assert!(client.is_upgrade_pending());
+
+    let result = client.try_store_invoice(
+        &business,
+        &1_000i128,
+        &currency,
+        &due_date,
+        &String::from_str(&env, "Should be blocked by upgrade guard"),
+        &InvoiceCategory::Services,
+        &Vec::new(&env),
+    );
+
+    assert_eq!(
+        result.unwrap_err().unwrap(),
+        QuickLendXError::UpgradeScheduled,
+        "store_invoice must return UpgradeScheduled during pending upgrade"
+    );
+}
+
+/// Verify that cancelling the pending upgrade restores write access.
+#[test]
+fn test_cancel_upgrade_restores_writes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(QuickLendXContract, ());
+    let client = QuickLendXContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_admin(&admin);
+
+    let business = Address::generate(&env);
+    let currency = Address::generate(&env);
+    let due_date = env.ledger().timestamp() + 86_400;
+
+    client.schedule_upgrade(&admin);
+    assert!(client.is_upgrade_pending());
+
+    client.cancel_upgrade(&admin);
+    assert!(!client.is_upgrade_pending());
+
+    // After cancel, writes succeed again.
+    let result = client.try_store_invoice(
+        &business,
+        &1_000i128,
+        &currency,
+        &due_date,
+        &String::from_str(&env, "Should succeed after cancel"),
+        &InvoiceCategory::Services,
+        &Vec::new(&env),
+    );
+    assert!(
+        result.is_ok(),
+        "store_invoice must succeed after upgrade is cancelled: {:?}",
+        result
+    );
+}
+
+/// Non-admin callers must be rejected when scheduling an upgrade.
+#[test]
+fn test_schedule_upgrade_requires_admin() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let impostor = Address::generate(&env);
+
+    let result = client.try_schedule_upgrade(&impostor);
+    assert_eq!(
+        result.unwrap_err().unwrap(),
+        QuickLendXError::NotAdmin,
+        "non-admin must not schedule an upgrade"
+    );
+}
+
+/// Calling cancel_upgrade when no upgrade is pending is safe (idempotent).
+#[test]
+fn test_cancel_upgrade_idempotent_when_not_pending() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+
+    assert!(!client.is_upgrade_pending());
+    // Should not error
+    let result = client.try_cancel_upgrade(&admin);
+    assert!(result.is_ok());
+    assert!(!client.is_upgrade_pending());
 }

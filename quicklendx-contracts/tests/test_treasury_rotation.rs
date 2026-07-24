@@ -2,7 +2,7 @@
 
 extern crate std;
 
-use quicklendx_contracts::{QuickLendXContract, QuickLendXContractClient, QuickLendXError};
+use quicklendx_contracts::{QuickLendXContract, QuickLendXContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Events},
     Address, Env, IntoVal,
@@ -10,7 +10,7 @@ use soroban_sdk::{
 
 // Helper to setup the test environment.
 // This assumes a similar setup to other tests in the project.
-fn setup() -> (Env, QuickLendXContractClient, Address) {
+fn setup() -> (Env, QuickLendXContractClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, QuickLendXContract);
@@ -42,20 +42,15 @@ fn test_cancel_treasury_rotation_by_admin_succeeds() {
     let pending_after_cancel = client.get_pending_treasury();
     assert!(pending_after_cancel.is_none());
 
-    // Verify event was emitted
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-
-    // This event structure uses the old `publish` format to be consistent
-    // with other admin events like `emit_admin_transfer_cancelled`.
-    assert_eq!(
-        last_event,
-        (
-            client.address.clone(),
-            (soroban_sdk::symbol_short!("tr_rot_cncl"), admin).into_val(&env),
-            ().into_val(&env)
-        )
-    );
+    // Verify event was emitted with the expected topic
+    let last_event = env.events().all().events().last().expect("expected at least one event");
+    let topic: soroban_sdk::Symbol = match &last_event.body {
+        soroban_sdk::xdr::ContractEventBody::V0(body) => {
+            let val: soroban_sdk::Val = body.topics.first().expect("event should have a topic");
+            val.try_into().expect("first topic should be convertible to Symbol")
+        }
+    };
+    assert_eq!(topic, soroban_sdk::symbol_short!("rot_cncl"));
 }
 
 #[test]

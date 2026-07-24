@@ -51,7 +51,7 @@ mod test_escrow;
 mod test_escrow_uniqueness;
 #[cfg(all(test, feature = "legacy-tests"))]
 mod test_fees;
-#[cfg(all(test, feature = "legacy-tests"))]
+#[cfg(test)]
 mod test_maintenance;
 #[cfg(all(test, feature = "legacy-tests"))]
 mod test_maintenance_write_matrix;
@@ -656,6 +656,7 @@ impl QuickLendXContract {
     /// Admin-only: configure default bid TTL (days). Bounds: 1..=30.
     pub fn set_bid_ttl_days(env: Env, days: u64) -> Result<u64, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         bid::BidStorage::set_bid_ttl_days(&env, &admin, days)
     }
@@ -746,6 +747,7 @@ impl QuickLendXContract {
         currency: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         currency::CurrencyWhitelist::add_currency(&env, &admin, &currency)
     }
 
@@ -756,6 +758,7 @@ impl QuickLendXContract {
         currency: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         currency::CurrencyWhitelist::remove_currency(&env, &admin, &currency)
     }
 
@@ -769,6 +772,7 @@ impl QuickLendXContract {
         currencies: Vec<Address>,
     ) -> Result<Vec<bool>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         currency::CurrencyWhitelist::add_currencies_batch(&env, &admin, &currencies)
     }
 
@@ -782,6 +786,7 @@ impl QuickLendXContract {
         currencies: Vec<Address>,
     ) -> Result<Vec<bool>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         currency::CurrencyWhitelist::remove_currencies_batch(&env, &admin, &currencies)
     }
 
@@ -802,6 +807,7 @@ impl QuickLendXContract {
         currencies: Vec<Address>,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         currency::CurrencyWhitelist::set_currencies(&env, &admin, &currencies)
     }
 
@@ -809,6 +815,7 @@ impl QuickLendXContract {
     /// After this call all currencies are allowed (empty-list backward-compat rule).
     pub fn clear_currencies(env: Env, admin: Address) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         currency::CurrencyWhitelist::clear_currencies(&env, &admin)
     }
 
@@ -869,6 +876,26 @@ impl QuickLendXContract {
         reason: String,
     ) -> Result<(), QuickLendXError> {
         maintenance::MaintenanceControl::set_maintenance_mode(&env, &admin, enabled, &reason)
+    }
+
+    /// Schedule a pending upgrade (admin only).
+    ///
+    /// While active, all state-mutating entrypoints reject with
+    /// `UpgradeScheduled` to prevent state changes during the upgrade window.
+    pub fn schedule_upgrade(env: Env, admin: Address) -> Result<(), QuickLendXError> {
+        maintenance::MaintenanceControl::set_upgrade_pending(&env, &admin, true)
+    }
+
+    /// Cancel a previously scheduled upgrade (admin only).
+    ///
+    /// Restores normal write access. No-op if no upgrade was pending.
+    pub fn cancel_upgrade(env: Env, admin: Address) -> Result<(), QuickLendXError> {
+        maintenance::MaintenanceControl::set_upgrade_pending(&env, &admin, false)
+    }
+
+    /// Return `true` if a contract upgrade has been scheduled.
+    pub fn is_upgrade_pending(env: Env) -> bool {
+        maintenance::MaintenanceControl::is_upgrade_pending(&env)
     }
 
     /// Atomically enter incident mode: hard pause plus maintenance with reason.
@@ -1003,6 +1030,7 @@ impl QuickLendXContract {
         tags: Vec<String>,
     ) -> Result<BytesN<32>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         require_not_self(&env, &business)?;
         // Validate input parameters
         if amount <= 0 {
@@ -1075,6 +1103,7 @@ impl QuickLendXContract {
         tags: Vec<String>,
     ) -> Result<BytesN<32>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         // Only the business can upload their own invoice
         business.require_auth();
 
@@ -1138,12 +1167,14 @@ impl QuickLendXContract {
         bid_id: BytesN<32>,
     ) -> Result<BytesN<32>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || do_accept_bid_and_fund(&env, &invoice_id, &bid_id))
     }
 
     /// Verify an invoice (admin or automated process)
     pub fn verify_invoice(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         admin.require_auth();
 
@@ -1184,6 +1215,7 @@ impl QuickLendXContract {
     /// Cancel an invoice (business only, before funding)
     pub fn cancel_invoice(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
 
@@ -1237,6 +1269,7 @@ impl QuickLendXContract {
         metadata: InvoiceMetadata,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
 
@@ -1258,6 +1291,7 @@ impl QuickLendXContract {
     /// Clear metadata attached to an invoice
     pub fn clear_invoice_metadata(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
 
@@ -1324,6 +1358,7 @@ impl QuickLendXContract {
         new_status: InvoiceStatus,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
 
         if new_status == InvoiceStatus::Defaulted {
@@ -1446,6 +1481,7 @@ impl QuickLendXContract {
     /// Clear all invoices from storage (admin only, used for restore operations)
     pub fn clear_all_invoices(env: Env) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         use crate::storage::InvoiceStorage;
         InvoiceStorage::clear_all(&env);
         Ok(())
@@ -1533,6 +1569,7 @@ impl QuickLendXContract {
     /// preventing double-action execution regardless of call ordering.
     pub fn cancel_bid(env: Env, bid_id: BytesN<32>) -> bool {
         pause::PauseControl::require_not_paused(&env).is_ok()
+            && maintenance::MaintenanceControl::require_no_pending_upgrade(&env).is_ok()
             && bid::BidStorage::cancel_bid(&env, &bid_id)
     }
 
@@ -1545,6 +1582,7 @@ impl QuickLendXContract {
     /// preventing double-action execution.
     pub fn withdraw_bid(env: Env, bid_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut bid =
             BidStorage::get_bid(&env, &bid_id).unwrap();
         bid.investor.require_auth();
@@ -1587,6 +1625,7 @@ impl QuickLendXContract {
         salt: BytesN<32>,
     ) -> Result<BytesN<32>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         require_not_self(&env, &investor)?;
         // Idempotency check
         let idem_key = idempotency_key(&invoice_id, &investor, &salt, &env);
@@ -1677,6 +1716,7 @@ impl QuickLendXContract {
         bid_id: BytesN<32>,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             Self::accept_bid_impl(env.clone(), invoice_id.clone(), bid_id.clone())
         })
@@ -1768,6 +1808,7 @@ impl QuickLendXContract {
         coverage_percentage: u32,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut investment = InvestmentStorage::get_investment(&env, &investment_id)
             .unwrap();
 
@@ -1812,6 +1853,7 @@ impl QuickLendXContract {
         payment_amount: i128,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let _investment = InvestmentStorage::get_investment_by_invoice(&env, &invoice_id);
 
         let result = reentrancy::with_payment_guard(&env, || {
@@ -1894,6 +1936,7 @@ impl QuickLendXContract {
         transaction_id: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             do_process_partial_payment(&env, &invoice_id, payment_amount, transaction_id.clone())
         })
@@ -1914,6 +1957,7 @@ impl QuickLendXContract {
         transaction_id: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             do_process_partial_payment(&env, &invoice_id, payment_amount, transaction_id.clone())
         })
@@ -1925,6 +1969,7 @@ impl QuickLendXContract {
     /// or marks it as expired otherwise.
     pub fn expire_invoice(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
         let current_ts = env.ledger().timestamp();
@@ -1941,6 +1986,7 @@ impl QuickLendXContract {
     /// Convenience entry point used by tests and off-chain clients.
     pub fn refund_escrow(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         reentrancy::with_payment_guard(&env, || do_refund_escrow_funds(&env, &invoice_id, &admin))
     }
@@ -1956,6 +2002,7 @@ impl QuickLendXContract {
     /// This is the internal handler - use mark_invoice_defaulted for public API
     pub fn handle_default(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         admin.require_auth();
 
@@ -1989,6 +2036,7 @@ impl QuickLendXContract {
         grace_period: Option<u64>,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         admin.require_auth();
 
@@ -2015,6 +2063,7 @@ impl QuickLendXContract {
     /// Update the platform fee basis points (admin only)
     pub fn set_platform_fee(env: Env, new_fee_bps: i128) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         PlatformFee::set_config(&env, &admin, new_fee_bps)?;
         Ok(())
@@ -2029,6 +2078,7 @@ impl QuickLendXContract {
         kyc_data: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         require_not_self(&env, &business)?;
         submit_kyc_application(&env, &business, kyc_data)
     }
@@ -2040,6 +2090,7 @@ impl QuickLendXContract {
         kyc_data: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         require_not_self(&env, &investor)?;
         do_submit_investor_kyc(&env, &investor, kyc_data)
     }
@@ -2051,6 +2102,7 @@ impl QuickLendXContract {
         investment_limit: i128,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin =
             BusinessVerificationStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         let verification = do_verify_investor(&env, &admin, &investor, investment_limit)?;
@@ -2070,6 +2122,7 @@ impl QuickLendXContract {
         reason: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         do_reject_investor(&env, &admin, &investor, reason)
     }
@@ -2086,6 +2139,7 @@ impl QuickLendXContract {
         reason: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin = AdminStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         do_revoke_investor_kyc(&env, &admin, &investor, reason)
     }
@@ -2102,6 +2156,7 @@ impl QuickLendXContract {
         new_limit: i128,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let admin =
             BusinessVerificationStorage::get_admin(&env).ok_or(QuickLendXError::NotAdmin)?;
         verification::set_investment_limit(&env, &admin, &investor, new_limit)
@@ -2114,6 +2169,7 @@ impl QuickLendXContract {
         investor: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         recompute_investor_tier(&env, &admin, &investor)
     }
 
@@ -2125,6 +2181,7 @@ impl QuickLendXContract {
         business: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         verify_business(&env, &admin, &business)
     }
 
@@ -2137,6 +2194,7 @@ impl QuickLendXContract {
         reason: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reject_business(&env, &admin, &business, reason)
     }
 
@@ -2195,6 +2253,7 @@ impl QuickLendXContract {
         grace_period_seconds: u64,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         protocol_limits::ProtocolLimitsContract::set_protocol_limits(
             env,
             admin,
@@ -2216,6 +2275,7 @@ impl QuickLendXContract {
         grace_period_seconds: u64,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         protocol_limits::ProtocolLimitsContract::set_protocol_limits(
             env,
             admin,
@@ -2238,6 +2298,7 @@ impl QuickLendXContract {
         max_invoices_per_business: u32,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         protocol_limits::ProtocolLimitsContract::set_protocol_limits(
             env,
             admin,
@@ -2403,6 +2464,7 @@ impl QuickLendXContract {
     /// Release escrow funds to business upon invoice verification
     pub fn release_escrow_funds(env: Env, invoice_id: BytesN<32>) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             let invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
                 .ok_or(QuickLendXError::InvoiceNotFound)?;
@@ -2440,6 +2502,7 @@ impl QuickLendXContract {
         caller: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || do_refund_escrow_funds(&env, &invoice_id, &caller))
     }
 
@@ -2470,6 +2533,7 @@ impl QuickLendXContract {
         investor: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             do_withdraw_investment(&env, &invoice_id, &investor)
         })
@@ -2532,6 +2596,7 @@ impl QuickLendXContract {
         grace_period: Option<u64>,
     ) -> Result<bool, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
         let grace = defaults::resolve_grace_period(&env, grace_period)?;
@@ -2588,6 +2653,7 @@ impl QuickLendXContract {
         new_category: InvoiceCategory,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
 
@@ -2626,6 +2692,7 @@ impl QuickLendXContract {
         tag: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
 
@@ -2655,6 +2722,7 @@ impl QuickLendXContract {
         tag: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
 
@@ -3184,6 +3252,7 @@ impl QuickLendXContract {
     /// Create a backup of all invoice data (admin only).
     pub fn create_backup(env: Env, admin: Address) -> Result<BytesN<32>, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         AdminStorage::require_admin(&env, &admin)?;
         let backup_id = backup::BackupStorage::generate_backup_id(&env);
         let invoices = backup::BackupStorage::get_all_invoices(&env);
@@ -3209,6 +3278,7 @@ impl QuickLendXContract {
         backup_id: BytesN<32>,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         AdminStorage::require_admin(&env, &admin)?;
         backup::BackupStorage::restore_from_backup(&env, &backup_id)?;
         Ok(())
@@ -3221,6 +3291,7 @@ impl QuickLendXContract {
         backup_id: BytesN<32>,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         AdminStorage::require_admin(&env, &admin)?;
         let mut b = backup::BackupStorage::get_backup(&env, &backup_id)
             .unwrap();
@@ -3248,6 +3319,7 @@ impl QuickLendXContract {
     /// Manually trigger cleanup of old backups (admin only).
     pub fn cleanup_backups(env: Env, admin: Address) -> Result<u32, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         AdminStorage::require_admin(&env, &admin)?;
         backup::BackupStorage::cleanup_old_backups(&env)
     }
@@ -3266,6 +3338,7 @@ impl QuickLendXContract {
         auto_cleanup_enabled: bool,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         AdminStorage::require_admin(&env, &admin)?;
         let policy = backup::BackupRetentionPolicy {
             max_backups,
@@ -3309,6 +3382,7 @@ impl QuickLendXContract {
         end_time: u64,
     ) -> Result<u64, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             vesting::Vesting::create_schedule(
                 &env,
@@ -3357,6 +3431,7 @@ impl QuickLendXContract {
         id: u64,
     ) -> Result<i128, QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || vesting::Vesting::release(&env, &beneficiary, id))
     }
 
@@ -3398,6 +3473,7 @@ impl QuickLendXContract {
         vesting_end: u64,
     ) -> Result<(i128, u64, i128), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         reentrancy::with_payment_guard(&env, || {
             let (treasury_amount, developer_amount, platform_amount) =
                 fees::FeeManager::distribute_revenue(&env, &admin, period)?;
@@ -3443,6 +3519,7 @@ impl QuickLendXContract {
         rater: Address,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
         let ts = env.ledger().timestamp();
@@ -3551,6 +3628,7 @@ impl QuickLendXContract {
         evidence: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         creator.require_auth();
         let mut invoice = InvoiceStorage::get_invoice(&env, &invoice_id)
             .ok_or(QuickLendXError::InvoiceNotFound)?;
@@ -3601,6 +3679,7 @@ impl QuickLendXContract {
         evidence: String,
     ) -> Result<(), QuickLendXError> {
         pause::PauseControl::require_not_paused(&env)?;
+        maintenance::MaintenanceControl::require_no_pending_upgrade(&env)?;
         creator.require_auth();
         validate_dispute_evidence(&evidence)?;
 

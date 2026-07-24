@@ -127,6 +127,60 @@ impl MaintenanceControl {
         }
     }
 
+    // ─── Upgrade-pending guard ───────────────────────────────────────────────
+
+    /// Storage key for the upgrade-pending boolean flag.
+    pub const UPGRADE_PENDING_KEY: Symbol = symbol_short!("upg_pnd");
+
+    /// Return `true` if a contract upgrade has been scheduled (writes blocked).
+    pub fn is_upgrade_pending(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&Self::UPGRADE_PENDING_KEY)
+            .unwrap_or(false)
+    }
+
+    /// Guard: reject state-mutating operations when an upgrade is scheduled.
+    pub fn require_no_pending_upgrade(env: &Env) -> Result<(), QuickLendXError> {
+        if Self::is_upgrade_pending(env) {
+            Err(QuickLendXError::UpgradeScheduled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Schedule or cancel a pending upgrade (admin only).
+    ///
+    /// When `pending` is true, all state-mutating entrypoints will reject with
+    /// [`QuickLendXError::UpgradeScheduled`] until an admin calls with `false`.
+    pub fn set_upgrade_pending(
+        env: &Env,
+        admin: &Address,
+        pending: bool,
+    ) -> Result<(), QuickLendXError> {
+        AdminStorage::require_admin(env, admin)?;
+        Self::apply_upgrade_pending(env, pending, admin);
+        Ok(())
+    }
+
+    fn apply_upgrade_pending(env: &Env, pending: bool, actor: &Address) {
+        env.storage()
+            .instance()
+            .set(&Self::UPGRADE_PENDING_KEY, &pending);
+
+        if pending {
+            env.events().publish(
+                (symbol_short!("UPG_PND"), symbol_short!("scheduled")),
+                actor.clone(),
+            );
+        } else {
+            env.events().publish(
+                (symbol_short!("UPG_PND"), symbol_short!("cancelled")),
+                actor.clone(),
+            );
+        }
+    }
+
     /// Admin-only: extends the TTL for all major persistent storage indexes.
     ///
     /// This iterates through invoices, bids, active investments, escrows (via invoices),

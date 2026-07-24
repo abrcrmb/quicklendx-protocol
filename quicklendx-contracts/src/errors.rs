@@ -192,6 +192,8 @@ pub enum QuickLendXError {
     /// Ledger sequences start at 1; sequence 0 indicates an uninitialised or default-constructed value.
     /// BREAKING: Do not renumber this variant. public ABI consumption.
     InvalidLedgerSequence = 2205,
+    /// A contract upgrade has been scheduled; state-mutating operations are temporarily blocked.
+    UpgradeScheduled = 2206,
 }
 
 impl From<QuickLendXError> for Symbol {
@@ -285,7 +287,10 @@ impl From<QuickLendXError> for Symbol {
             QuickLendXError::MaintenanceModeActive => symbol_short!("MAINT"),
             QuickLendXError::ArithmeticOverflow => symbol_short!("ARITH_OF"),
             QuickLendXError::DuplicateDefaultTransition => symbol_short!("DEF_DUP"),
-            QuickLendXError::BackupVersionUnsupported => symbol_short!("BKP_VER")
+            QuickLendXError::BackupVersionUnsupported => symbol_short!("BKP_VER"),
+            QuickLendXError::NoPendingTreasuryRotation => symbol_short!("ROT_NP"),
+            QuickLendXError::InvalidLedgerSequence => symbol_short!("INV_LSQ"),
+            QuickLendXError::UpgradeScheduled => symbol_short!("UPG_PND")
         }
     }
 }
